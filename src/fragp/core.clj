@@ -27,6 +27,10 @@
   (apply str (map char (take 8 (drop off bytes)))))
 
 
+(defn load-string4 [bytes off]
+  (apply str (map char (take 4 (drop off bytes)))))
+
+
 (defn parse-entities [bytes]
   (loop [off 0
          entities {}]
@@ -42,6 +46,17 @@
               :unknown1 (subvec bytes (+ off 8) (+ off 12)),
               :unknown2 (subvec bytes (+ off 16) (+ off 32)),
               :bytes (subvec bytes (+ off 32) (+ off 32 size))}))))))
+
+(defn parse-video-entities [bytes total]
+  (loop [off 0
+         entities (transient [])]
+    (if (>= off total)
+      (persistent! entities)
+      (let [id (load-string4 bytes off)
+            size (load-uint32 bytes (+ off 4))]
+        (recur (+ off size)
+               (conj! entities {:id id
+                                :bytes (subvec bytes (+ off 8) (+ off size))}))))))
 
 
 (defn parse-picture [entity]
@@ -104,7 +119,7 @@
 
 (defn convert-256 [infile outfile]
   (-> (load-graphics infile)
-      (adjust-brightness 5)
+      (adjust-brightness 4)
       (save-picture-as-png! outfile)))
 
 
@@ -126,6 +141,33 @@
                        out
                        (concat (repeat nfill nil)
                                (take npixels (drop 2 bytes)))))))))
+
+
+(defn decode-inte-image [bytes]
+  (loop [bytes bytes
+         out (transient [])]
+    (if (empty? bytes)
+      (persistent! out)
+      (let [n (first bytes)]
+        (if (> n 127)
+          (let [nfill (- 256 n)
+                index (second bytes)]
+            (recur (subvec bytes 2)
+                   (reduce conj! out (repeat nfill index))))
+          (recur (subvec bytes (inc n))
+                 (reduce conj! out (take n (drop 1 bytes)))))))))
+
+
+(defn upscale-2x [pixels width]
+  (persistent! (reduce (fn [out row]
+                         (reduce (fn [out p]
+                                   (-> out
+                                       (conj! p)
+                                       (conj! p)))
+                                 out
+                                 (concat row row)))
+                       (transient [])
+                       (partition width pixels))))
 
 
 (defn parse-sprite [n entity]
@@ -172,9 +214,48 @@
        (parse-graphics-sprites)))
 
 
+(defn parse-video-head [bytes]
+  {:id "Head"
+   :width (load-uint16 bytes 2)
+   :height (load-uint16 bytes 4)})
+
+(defn parse-video-inte [bytes {:keys [width height]}]
+  {:width width
+   :height height
+   :indices (upscale-2x (decode-inte-image (subvec bytes 0x30c)) (/ width 2))})
+
+(defn parse-video-frame [bytes {:keys [width height]}]
+  {:width width
+   :height height
+   :indices (vec (concat bytes (repeat (* width height) nil)))})
+
+
+(defn parse-video [bytes]
+  (let [total (load-uint32 bytes 4)
+        entities (parse-video-entities (subvec bytes 8 total) (- total 8))
+        head (parse-video-head (:bytes (first entities)))]
+    (prn (map #(dissoc (assoc % :size (count (:bytes %))) % :bytes)
+              entities))
+    (parse-video-inte (:bytes (second entities)) head)))
+
+
+(defn load-video [filename]
+  (->> filename
+       (load-bytes)
+       (parse-video)))
+
+
+(defn load-palette [filename]
+  (-> filename
+       (load-bytes)
+       (parse-entities)
+       (get "PALETTE ")
+       (parse-palette)))
+
+
 (defn convert-sprite [infile n outfile]
   (-> (load-graphics-sprite infile n)
-      (adjust-brightness 5)
+      (adjust-brightness 4)
       (save-picture-as-png! outfile)))
 
 
@@ -184,13 +265,13 @@
            i 0]
       (when sprites
         (save-picture-as-png!
-         (adjust-brightness (first sprites) 5)
+         (adjust-brightness (first sprites) 4)
          (.replace outfile "#" (str i)))
         (recur (next sprites) (inc i))))))
 
 
 (defn cajji []
-  (convert-256 "/Volumes/Untitled/_INTRO/CAJJI.256" 0 "cajji.png"))
+  (convert-256 "/Volumes/Untitled/_INTRO/CAJJI.256" "cajji.png"))
 
 
 (defn c1 []
@@ -240,6 +321,18 @@
 (defn orange []
   (convert-sprites "/Volumes/Untitled/_MS/ORANGE.256" "orange_#.png"))
 
+
+(defn c2-002 []
+  (let [frame (load-video "/Volumes/Untitled/_C2/001.VID")
+        palette (scale-palette 4 (load-palette "/Volumes/Untitled/_C2/999.256"))
+        frame (assoc frame :palette palette)]
+    (save-picture-as-png! frame "c2_001_0.png")))
+
+(defn cajji-vid []
+  (let [frame (load-video "/Volumes/Untitled/_INTRO/CAJJI.VID")
+        palette (scale-palette 4 (load-palette "/Volumes/Untitled/_INTRO/CAJJI.256"))
+        frame (assoc frame :palette palette)]
+    (save-picture-as-png! frame "cajji_vid_0b.png")))
 
 (defn -main
   "I don't do a whole lot ... yet."
