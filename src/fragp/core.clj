@@ -87,13 +87,18 @@
 
 
 (defn save-picture-as-png! [{:keys [width height indices palette]} ^String filename]
-  (let [img ^BufferedImage (BufferedImage. width height BufferedImage/TYPE_INT_RGB)]
+  (let [img ^BufferedImage (BufferedImage. width height BufferedImage/TYPE_INT_ARGB)]
     (doseq [y (range height)]
       (doseq [x (range width)]
         (let [index (indices (+ x (* y width)))
-              rgb (palette index)
-              rgb (bit-or (rgb 2) (bit-shift-left (rgb 1) 8) (bit-shift-left (rgb 0) 16))]
-          (.setRGB img x y rgb))))
+              rgb (get palette index)
+              rgb (if rgb
+                    (bit-or (rgb 2)
+                            (bit-shift-left (rgb 1) 8)
+                            (bit-shift-left (rgb 0) 16)
+                            (bit-shift-left 0xff 24))
+                    0)]
+          (.setRGB img x y (unchecked-int rgb)))))
     (ImageIO/write img "png" (File. filename))))
 
 
@@ -109,7 +114,7 @@
          out (transient [])]
     (if (or (= size total)
             (empty? bytes))
-      (persistent! (reduce conj! out (repeat (- total size) 0)))
+      (persistent! (reduce conj! out (repeat (- total size) nil)))
       (let [nfill (first bytes)
             npixels (second bytes)
             nfill (if (and (zero? nfill) (zero? npixels))
@@ -119,7 +124,7 @@
                (+ size nfill npixels)
                (reduce conj!
                        out
-                       (concat (repeat nfill 0)
+                       (concat (repeat nfill nil)
                                (take npixels (drop 2 bytes)))))))))
 
 
