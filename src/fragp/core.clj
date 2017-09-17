@@ -69,7 +69,7 @@
 
 
 (defn parse-palette [entity]
-  (vec (map vec (partition 3 (:bytes entity)))))
+  (vec (map vec (partition 3 (map #(* 4 %) (:bytes entity))))))
 
 
 (defn parse-graphics [entities]
@@ -83,22 +83,6 @@
        (load-bytes)
        (parse-entities)
        (parse-graphics)))
-
-
-(defn scale-val [s v]
-  (max 0 (min 255 (int (* s v)))))
-
-
-(defn scale-rgb [s rgb]
-  (into [] (map #(scale-val s %)) rgb))
-
-
-(defn scale-palette [scale palette]
-  (into [] (map #(scale-rgb scale %)) palette))
-
-
-(defn adjust-brightness [image scale]
-  (update image :palette #(scale-palette scale %)))
 
 
 (defn save-picture-as-png! [{:keys [width height indices palette]} ^String filename]
@@ -119,7 +103,6 @@
 
 (defn convert-256 [infile outfile]
   (-> (load-graphics infile)
-      (adjust-brightness 4)
       (save-picture-as-png! outfile)))
 
 
@@ -255,7 +238,6 @@
 
 (defn convert-sprite [infile n outfile]
   (-> (load-graphics-sprite infile n)
-      (adjust-brightness 4)
       (save-picture-as-png! outfile)))
 
 
@@ -265,7 +247,7 @@
            i 0]
       (when sprites
         (save-picture-as-png!
-         (adjust-brightness (first sprites) 4)
+         (first sprites)
          (.replace outfile "#" (str i)))
         (recur (next sprites) (inc i))))))
 
@@ -324,13 +306,13 @@
 
 (defn c2-002 []
   (let [frame (load-video "/Volumes/Untitled/_C2/001.VID")
-        palette (scale-palette 4 (load-palette "/Volumes/Untitled/_C2/999.256"))
+        palette (load-palette "/Volumes/Untitled/_C2/999.256")
         frame (assoc frame :palette palette)]
     (save-picture-as-png! frame "c2_001_0.png")))
 
 (defn cajji-vid []
   (let [frame (load-video "/Volumes/Untitled/_INTRO/CAJJI.VID")
-        palette (scale-palette 4 (load-palette "/Volumes/Untitled/_INTRO/CAJJI.256"))
+        palette (load-palette "/Volumes/Untitled/_INTRO/CAJJI.256")
         frame (assoc frame :palette palette)]
     (save-picture-as-png! frame "cajji_vid_0b.png")))
 
