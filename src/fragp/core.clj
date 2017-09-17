@@ -128,7 +128,6 @@
         off0 (load-uint32 bytes (+ 16 12 (* n 16)))
         width (load-uint16 bytes (+ 16 8 (* n 16)))
         height (load-uint16 bytes (+ 16 10 (* n 16)))]
-    (prn off0 width height)
     {:width width
      :height height
      :indices (decode-sprite (subvec bytes off0)
@@ -136,10 +135,22 @@
                              (* width height))}))
 
 
+(defn parse-sprites [entity]
+  (let [bytes (:bytes entity)
+        n (load-uint16 bytes 8)]
+    (map #(parse-sprite % entity) (range n))))
+
+
 (defn parse-graphics-sprite [n entities]
   (let [sprite (parse-sprite n (entities "GRAPHICS"))
         palette (parse-palette (entities "PALETTE "))]
     (assoc sprite :palette palette)))
+
+
+(defn parse-graphics-sprites [entities]
+  (let [sprites (parse-sprites (entities "GRAPHICS"))
+        palette (parse-palette (entities "PALETTE "))]
+    (map #(assoc % :palette palette) sprites)))
 
 
 (defn load-graphics-sprite [filename n]
@@ -149,62 +160,80 @@
        (parse-graphics-sprite n)))
 
 
+(defn load-graphics-sprites [filename]
+  (->> filename
+       (load-bytes)
+       (parse-entities)
+       (parse-graphics-sprites)))
+
+
 (defn convert-sprite [infile n outfile]
   (-> (load-graphics-sprite infile n)
       (adjust-brightness 5)
       (save-picture-as-png! outfile)))
 
 
+(defn convert-sprites [infile outfile]
+  (let [sprites (load-graphics-sprites infile)]
+    (loop [sprites sprites
+           i 0]
+      (when sprites
+        (save-picture-as-png!
+         (adjust-brightness (first sprites) 5)
+         (.replace outfile "#" (str i)))
+        (recur (next sprites) (inc i))))))
+
+
 (defn cajji []
   (convert-256 "/Volumes/Untitled/_INTRO/CAJJI.256" 0 "cajji.png"))
 
 
-(defn c1 [n]
-  (convert-sprite "/Volumes/Untitled/_C1/999.256" n (str "c1_" n ".png")))
+(defn c1 []
+  (convert-sprites "/Volumes/Untitled/_C1/999.256" "c1_#.png"))
 
 
 (defn c2 []
-  (convert-sprite "/Volumes/Untitled/_C2/999.256" 0 "c2.png"))
+  (convert-sprites "/Volumes/Untitled/_C2/999.256" "c2_#.png"))
 
 
 (defn c3 []
-  (convert-sprite "/Volumes/Untitled/_C3/999.256" 0 "c3.png"))
+  (convert-sprites "/Volumes/Untitled/_C3/999.256" "c3_#.png"))
 
 
 (defn c4 []
-  (convert-sprite "/Volumes/Untitled/_C4/999.256" 0 "c4.png"))
+  (convert-sprites "/Volumes/Untitled/_C4/999.256" "c4_#.png"))
 
 
 (defn c5 []
-  (convert-sprite "/Volumes/Untitled/_C5/999.256" 0 "c5.png"))
+  (convert-sprites "/Volumes/Untitled/_C5/999.256" "c5_#.png"))
 
 
 (defn c6 []
-  (convert-sprite "/Volumes/Untitled/_C6/999.256" 0 "c6.png"))
+  (convert-sprites "/Volumes/Untitled/_C6/999.256" "c6_#.png"))
 
 
-(defn fe-dome [n]
-  (convert-sprite "/Volumes/Untitled/_MS/FE_DOME.256" n (str "fe_dome_" n ".png")))
+(defn fe-dome []
+  (convert-sprites "/Volumes/Untitled/_MS/FE_DOME.256" "fe_dome_#.png"))
 
 
 (defn fe-base []
-  (convert-sprite "/Volumes/Untitled/_MS/FE_BASE.256" 0 "fe_base.png"))
+  (convert-sprites "/Volumes/Untitled/_MS/FE_BASE.256" "fe_base_#.png"))
 
 
 (defn fe-edge []
-  (convert-sprite "/Volumes/Untitled/_MS/FE_EDGE.256" 0 "fe_edge.png"))
+  (convert-sprites "/Volumes/Untitled/_MS/FE_EDGE.256" "fe_edge_#.png"))
 
 
-(defn xb00 [n]
-  (convert-sprite "/Volumes/Untitled/_P/XB00.256" n (str "xb00_" n ".png")))
+(defn xb00 []
+  (convert-sprites "/Volumes/Untitled/_P/XB00.256" "xb00_#.png"))
 
 
-(defn edgemenu [n]
-  (convert-sprite "/Volumes/Untitled/_MS/EDGEMENU.256" n (str "edgemenu_" n ".png")))
+(defn edgemenu []
+  (convert-sprites "/Volumes/Untitled/_MS/EDGEMENU.256" "edgemenu_#.png"))
 
 
-(defn orange [n]
-  (convert-sprite "/Volumes/Untitled/_MS/ORANGE.256" n (str "orange_" n ".png")))
+(defn orange []
+  (convert-sprites "/Volumes/Untitled/_MS/ORANGE.256" "orange_#.png"))
 
 
 (defn -main
