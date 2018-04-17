@@ -210,7 +210,7 @@
 (defn parse-video-frame [bytes {:keys [width height]}]
   {:width width
    :height height
-   :indices (vec (concat bytes (repeat (* width height) nil)))})
+   :indices (vec (concat (subvec bytes 0x5116) (repeat (* width height) nil)))})
 
 
 (defn parse-video [bytes]
@@ -219,8 +219,19 @@
         head (parse-video-head (:bytes (first entities)))]
     (prn (map #(dissoc (assoc % :size (count (:bytes %))) % :bytes)
               entities))
-    (parse-video-inte (:bytes (second entities)) head)))
+    ; (parse-video-inte (:bytes (nth entities 1)) head)
+    (prn (count (decode-inte-image (subvec (:bytes (nth entities 2)) 0x3a60))))
+    (parse-video-inte (subvec (:bytes (nth entities 2)) 0x3a60) head)))
 
+; 0x3A60 first pixel of the frame
+; 8899
+
+; 5D - 01011101
+; 5F   4B   5F   5D
+; 0100 0101
+; 1011 1101
+; 0101 0101
+; 1111 1111
 
 (defn load-video [filename]
   (->> filename
