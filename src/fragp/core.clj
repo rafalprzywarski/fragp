@@ -31,6 +31,15 @@
   (apply str (map char (take 4 (drop off bytes)))))
 
 
+(defn load-cstring [bytes off len]
+  (->> bytes
+       (drop off)
+       (take len)
+       (take-while pos?)
+       (map char)
+       (apply str)))
+
+
 (defn parse-entities [bytes]
   (loop [off 0
          entities {}]
@@ -261,6 +270,34 @@
          (first sprites)
          (.replace outfile "#" (str i)))
         (recur (next sprites) (inc i))))))
+
+
+(defn parse-archive [bytes]
+  (let [data-offset (load-uint32 bytes 20)
+        nentries (/ (- data-offset 24) 24)]
+    {:name (load-cstring bytes 0 20)
+     :entries (map (fn [idx]
+                     (let [base (+ 24 (* idx 24))]
+                       {:name (load-cstring bytes base 16)
+                        :offset (load-uint32 bytes (+ base 16))
+                        :size (load-uint32 bytes (+ base 20))}))
+                   (range nentries))}))
+
+
+(defn load-archive [filename]
+  (-> filename
+      load-bytes
+      parse-archive))
+
+
+(defn explode-archive
+  ([bytes entries]
+   (doseq [{:keys [name offset size]} entries]
+     (clojure.java.io/copy (byte-array (subvec bytes offset (+ offset size))) (clojure.java.io/file name))))
+  ([filename]
+   (let [bytes (load-bytes filename)
+         archive (parse-archive bytes)]
+     (explode-archive bytes (:entries archive)))))
 
 
 (defn cajji []
