@@ -266,10 +266,12 @@
     (loop [sprites sprites
            i 0]
       (when sprites
-        (save-picture-as-png!
-         (first sprites)
-         (.replace outfile "#" (str i)))
-        (recur (next sprites) (inc i))))))
+        (let [sprite (first sprites)]
+          (when (and (pos? (:width sprite)) (pos? (:height sprite)))
+            (save-picture-as-png!
+             sprite
+             (.replace outfile "#" (str i))))
+          (recur (next sprites) (inc i)))))))
 
 
 (defn parse-archive [bytes]
