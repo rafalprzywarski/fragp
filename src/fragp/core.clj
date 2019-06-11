@@ -135,18 +135,22 @@
                                (take npixels (drop 2 bytes)))))))))
 
 
-(defn decode-inte-image [bytes]
+(defn decode-video-rle [bytes]
   (loop [bytes bytes
+         csize 0
          out (transient [])]
-    (if (empty? bytes)
-      (persistent! out)
+    (if (or (empty? bytes) (zero? (first bytes)))
+      {:bytes (persistent! out)
+       :rle-size (if (empty? bytes) csize (inc csize))}
       (let [n (first bytes)]
         (if (> n 127)
           (let [nfill (- 256 n)
                 index (second bytes)]
             (recur (subvec bytes 2)
+                   (+ csize 2)
                    (reduce conj! out (repeat nfill index))))
           (recur (subvec bytes (inc n))
+                 (+ csize (inc n))
                  (reduce conj! out (take n (drop 1 bytes)))))))))
 
 
@@ -208,13 +212,21 @@
 
 (defn parse-video-head [bytes]
   {:id "Head"
+   :unknown1 (load-uint16 bytes 0)
    :width (load-uint16 bytes 2)
-   :height (load-uint16 bytes 4)})
+   :height (load-uint16 bytes 4)
+   :unknown2 (subvec bytes 6)})
+
 
 (defn parse-video-inte [bytes {:keys [width height]}]
-  {:width width
-   :height height
-   :indices (upscale-2x (decode-inte-image (subvec bytes 0x30c)) (/ width 2))})
+  (let [palette (decode-video-rle (subvec bytes 4))
+        inte (decode-video-rle (subvec bytes (+ 4 (:rle-size palette))))]
+    {:width width
+     :height height
+     :unknown1 (subvec bytes 0 4)
+     :palette (parse-palette palette)
+     :indices (upscale-2x (:bytes inte) (/ width 2))}))
+
 
 (defn parse-video-frame [bytes {:keys [width height]}]
   {:width width
@@ -226,11 +238,12 @@
   (let [total (load-uint32 bytes 4)
         entities (parse-video-entities (subvec bytes 8 total) (- total 8))
         head (parse-video-head (:bytes (first entities)))]
-    (prn (map #(dissoc (assoc % :size (count (:bytes %))) % :bytes)
-              entities))
-    ; (parse-video-inte (:bytes (nth entities 1)) head)
-    (prn (count (decode-inte-image (subvec (:bytes (nth entities 2)) 0x3a60))))
-    (parse-video-inte (subvec (:bytes (nth entities 2)) 0x3a60) head)))
+                                        ;(prn (map #(dissoc (assoc % :size (count (:bytes %))) % :bytes) entities))
+    (parse-video-inte (:bytes (nth entities 1)) head)
+                                        ; (prn (count (decode-inte-image (subvec (:bytes (nth entities 2)) 0x3a60))))
+                                        ; (parse-video-inte (subvec (:bytes (nth entities 2)) 0x3a60) head)
+    ))
+
 
 ; 0x3A60 first pixel of the frame
 ; 8899
@@ -355,16 +368,12 @@
 
 
 (defn c2-002 []
-  (let [frame (load-video "/Volumes/Untitled/_C2/001.VID")
-        palette (load-palette "/Volumes/Untitled/_C2/999.256")
-        frame (assoc frame :palette palette)]
+  (let [frame (load-video "/Volumes/Untitled/_C2/001.VID")]
     (save-picture-as-png! frame "c2_001_0.png")))
 
 (defn cajji-vid []
-  (let [frame (load-video "/Volumes/Untitled/_INTRO/CAJJI.VID")
-        palette (load-palette "/Volumes/Untitled/_INTRO/CAJJI.256")
-        frame (assoc frame :palette palette)]
-    (save-picture-as-png! frame "cajji_vid_0b.png")))
+  (let [frame (load-video "/Volumes/Untitled/_INTRO/CAJJI.VID")]
+    (save-picture-as-png! frame "cajji_vid_1c.png")))
 
 (defn -main
   "I don't do a whole lot ... yet."
