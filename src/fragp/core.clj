@@ -215,7 +215,8 @@
    :unknown1 (load-uint16 bytes 0)
    :width (load-uint16 bytes 2)
    :height (load-uint16 bytes 4)
-   :unknown2 (subvec bytes 6)})
+   :frame-count (load-uint16 bytes 6)
+   :unknown2 (subvec bytes 8)})
 
 
 (defn parse-video-inte [bytes {:keys [width height]}]
@@ -228,32 +229,131 @@
      :indices (upscale-2x (:bytes inte) (/ width 2))}))
 
 
-(defn parse-video-frame [bytes {:keys [width height]}]
-  {:width width
-   :height height
-   :indices (vec (concat (subvec bytes 0x5116) (repeat (* width height) nil)))})
+(defn s4-to-int [n]
+  (if (< n 8) n (- n 16)))
+
+
+(defn decode-s4-pair [b]
+  [(s4-to-int (bit-and 0xf b))
+   (s4-to-int (bit-shift-right b 4))])
+
+
+(defn decode-fram-indices [blocks pixels {:keys [width height] prev-indices :indices}]
+  (let [gdx (unchecked-byte (blocks 0))
+        gdy (unchecked-byte (blocks 1))
+        blocks (subvec blocks 2)
+        decode-dxdy (fn [blocks]
+                      [(decode-s4-pair (blocks 0)) (subvec blocks 1)])
+        decode-mask (fn [blocks has-dxdy dx dy]
+                      (if (and has-dxdy (zero? dx) (zero? dy))
+                        [0xffff blocks]
+                        (if (= dx -8)
+                          (condp = dy
+                            6 [(bit-shift-left (blocks 0) 8) (subvec blocks 1)]
+                            -3 [(+ 0xff00 (blocks 0)) (subvec blocks 1)] ; difference between 5 and 0?
+                            [(+ (bit-shift-left (blocks 1) 8) (blocks 0)) (subvec blocks 2)]) ; 0 and 5
+                          [(+ (bit-shift-left (blocks 1) 8) (blocks 0)) (subvec blocks 2)])))
+        mask-from-dxdy (fn [has-dxdy dx dy]
+                         (if (and has-dxdy (zero? dx) (zero? dy))
+                           0xffff
+                           0x0000))
+        get-pixel (fn [x y] (try (prev-indices (+ x (* y width))) (catch IndexOutOfBoundsException e nil)))
+;        get-pixel (fn [x y] (prev-indices (+ x (* y width))))
+        set-pixel (fn [indices x y p] (assoc! indices (+ x (* y width)) p))
+        decode-filler (fn [dx pixels]
+                        (if (= dx -8)
+                          [(first pixels) (next pixels)]
+                          [nil pixels]))
+        decode-pixel (fn [indices pixels x y dx dy is-new filler]
+                       (if is-new
+                         [(set-pixel indices x y (first pixels)) (next pixels)]
+                         [(set-pixel indices x y (or filler (get-pixel (+ x dx) (+ y dy)))) pixels]))
+        decode-block4x4 (fn [indices pixels x y dx dy mask filler]
+                          (let [[indices pixels] (decode-pixel indices pixels x y dx dy (bit-test mask 15) filler)
+                                [indices pixels] (decode-pixel indices pixels (+ x 1) y dx dy (bit-test mask 14) filler)
+                                [indices pixels] (decode-pixel indices pixels (+ x 2) y dx dy (bit-test mask 13) filler)
+                                [indices pixels] (decode-pixel indices pixels (+ x 3) y dx dy (bit-test mask 12) filler)
+                                y (inc y)
+                                [indices pixels] (decode-pixel indices pixels x y dx dy (bit-test mask 11) filler)
+                                [indices pixels] (decode-pixel indices pixels (+ x 1) y dx dy (bit-test mask 10) filler)
+                                [indices pixels] (decode-pixel indices pixels (+ x 2) y dx dy (bit-test mask 9) filler)
+                                [indices pixels] (decode-pixel indices pixels (+ x 3) y dx dy (bit-test mask 8) filler)
+                                y (inc y)
+                                [indices pixels] (decode-pixel indices pixels x y dx dy (bit-test mask 7) filler)
+                                [indices pixels] (decode-pixel indices pixels (+ x 1) y dx dy (bit-test mask 6) filler)
+                                [indices pixels] (decode-pixel indices pixels (+ x 2) y dx dy (bit-test mask 5) filler)
+                                [indices pixels] (decode-pixel indices pixels (+ x 3) y dx dy (bit-test mask 4) filler)
+                                y (inc y)
+                                [indices pixels] (decode-pixel indices pixels x y dx dy (bit-test mask 3) filler)
+                                [indices pixels] (decode-pixel indices pixels (+ x 1) y dx dy (bit-test mask 2) filler)
+                                [indices pixels] (decode-pixel indices pixels (+ x 2) y dx dy (bit-test mask 1) filler)
+                                [indices pixels] (decode-pixel indices pixels (+ x 3) y dx dy (bit-test mask 0) filler)]
+                            [indices pixels]))
+        indices (transient prev-indices)]
+    (loop [blocks blocks
+           pixels pixels
+           x 0
+           y 0]
+      (if (or (empty? blocks)
+              (= y height))
+        (do
+          (println "block bytes left:" (count blocks) "pixel bytes left:" (count pixels))
+          (persistent! indices))
+        (let [prefix (mapv #(format "%02X" %) (take 16 blocks))
+             ;  _ (when (= [x y] [40 0]) (println prefix))
+              [dx dy] (decode-s4-pair (blocks 0))
+              cb (blocks 1)
+              blocks (subvec blocks 2)
+              [[dx0 dy0] blocks] (if (bit-test cb 6) (decode-dxdy blocks) [[0 0] blocks])
+              [mask0 blocks] (if (bit-test cb 7) (decode-mask blocks (bit-test cb 6) dx0 dy0) [(mask-from-dxdy (bit-test cb 6) dx0 dy0) blocks])
+              [[dx1 dy1] blocks] (if (bit-test cb 4) (decode-dxdy blocks) [[0 0] blocks])
+              [mask1 blocks] (if (bit-test cb 5) (decode-mask blocks (bit-test cb 4) dx1 dy1) [(mask-from-dxdy (bit-test cb 4) dx1 dy1) blocks])
+              [[dx2 dy2] blocks] (if (bit-test cb 2) (decode-dxdy blocks) [[0 0] blocks])
+              [mask2 blocks] (if (bit-test cb 3) (decode-mask blocks (bit-test cb 2) dx2 dy2) [(mask-from-dxdy (bit-test cb 2) dx2 dy2) blocks])
+              [[dx3 dy3] blocks] (if (bit-test cb 0) (decode-dxdy blocks) [[0 0] blocks])
+              [mask3 blocks] (if (bit-test cb 1) (decode-mask blocks (bit-test cb 0) dx3 dy3) [(mask-from-dxdy (bit-test cb 0) dx3 dy3) blocks])
+              _ (if (= dx0 -8) (println dy0 x y prefix))
+              _ (if (= dx1 -8) (println dy1 x y prefix))
+              _ (if (= dx2 -8) (println dy2 x y prefix))
+              _ (if (= dx3 -8) (println dy3 x y prefix))
+              [filler0 pixels] (decode-filler dx0 pixels)
+              [indices pixels] (decode-block4x4 indices pixels x y (+ gdx dx dx0) (+ gdy dy dy0) mask0 filler0)
+              [filler1 pixels] (decode-filler dx1 pixels)
+              [indices pixels] (decode-block4x4 indices pixels (+ x 4) y (+ gdx dx dx1) (+ gdy dy dy1) mask1 filler1)
+              [filler2 pixels] (decode-filler dx2 pixels)
+              [indices pixels] (decode-block4x4 indices pixels x (+ y 4) (+ gdx dx dx2) (+ gdy dy dy2) mask2 filler2)
+              [filler3 pixels] (decode-filler dx3 pixels)
+              [indices pixels] (decode-block4x4 indices pixels (+ x 4) (+ y 4) (+ gdx dx dx3) (+ gdy dy dy3) mask3 filler3)
+              [x y] (if (< (+ x 8) width) [(+ x 8) y] [0 (+ y 8)])]
+          (recur blocks pixels x y))))))
+
+
+(defn parse-video-fram [bytes {:keys [width height palette] :as prev-frame}]
+  (let [blocks (decode-video-rle (subvec bytes 2))
+        pixels (decode-video-rle (subvec bytes (+ 2 (:rle-size blocks))))]
+    {:unknown1 (subvec bytes 0 2)
+     :width width
+     :height height
+     :palette palette
+     :indices (decode-fram-indices (:bytes blocks) (:bytes pixels) prev-frame)}))
 
 
 (defn parse-video [bytes]
   (let [total (load-uint32 bytes 4)
         entities (parse-video-entities (subvec bytes 8 total) (- total 8))
         head (parse-video-head (:bytes (first entities)))]
-                                        ;(prn (map #(dissoc (assoc % :size (count (:bytes %))) % :bytes) entities))
-    (parse-video-inte (:bytes (nth entities 1)) head)
-                                        ; (prn (count (decode-inte-image (subvec (:bytes (nth entities 2)) 0x3a60))))
-                                        ; (parse-video-inte (subvec (:bytes (nth entities 2)) 0x3a60) head)
-    ))
+    (loop [entities (next entities)
+           prev-frame nil
+           frames (transient [])]
+      (let [entity (first entities)
+            id (:id entity)]
+        (condp = id
+          "Inte" (recur (next entities) (parse-video-inte (:bytes entity) head) frames)
+          "Fram" (let [frame (parse-video-fram (:bytes entity) prev-frame)]
+                   (recur (next entities) frame (conj! frames frame)))
+          "Same" (recur (next entities) prev-frame (conj! frames prev-frame))
+          "Stop" (persistent! frames))))))
 
-
-; 0x3A60 first pixel of the frame
-; 8899
-
-; 5D - 01011101
-; 5F   4B   5F   5D
-; 0100 0101
-; 1011 1101
-; 0101 0101
-; 1111 1111
 
 (defn load-video [filename]
   (->> filename
@@ -367,13 +467,26 @@
   (convert-sprites "/Volumes/Untitled/_MS/ORANGE.256" "orange_#.png"))
 
 
+(defn save-frames! [frames ^String filename]
+  (doseq [[idx frame] (map-indexed (fn [i f] [i f]) frames)]
+    (save-picture-as-png! frame (.replace filename "#" (str idx)))))
+
+
 (defn c2-002 []
-  (let [frame (load-video "/Volumes/Untitled/_C2/001.VID")]
-    (save-picture-as-png! frame "c2_001_0.png")))
+  (save-frames! (load-video "/Volumes/Untitled/_C2/001.VID") "c2_001_#.png"))
+
 
 (defn cajji-vid []
-  (let [frame (load-video "/Volumes/Untitled/_INTRO/CAJJI.VID")]
-    (save-picture-as-png! frame "cajji_vid_1c.png")))
+  (save-frames! (load-video "/Users/rp/Projects/FragilePlayground/Fragile Allegiance.boxer/C.harddisk/FRAGILE/_INTRO/CAJJI.VID") "cajji_vid_#.png"))
+
+
+(defn cajji-orig-vid []
+  (save-frames! (load-video "/Volumes/Untitled/_INTRO/CAJJI.VID") "cajji_orig_vid_#.png"))
+
+
+(defn st00 []
+  (save-frames! (load-video "/Volumes/Untitled/_SCITEK/ST00.VID") "st00_#.png"))
+
 
 (defn -main
   "I don't do a whole lot ... yet."
