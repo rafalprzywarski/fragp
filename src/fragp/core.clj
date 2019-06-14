@@ -244,15 +244,27 @@
         blocks (subvec blocks 2)
         decode-dxdy (fn [blocks]
                       [(decode-s4-pair (blocks 0)) (subvec blocks 1)])
-        decode-mask (fn [blocks has-dxdy dx dy]
-                      (if (and has-dxdy (zero? dx) (zero? dy))
-                        [0xffff blocks]
-                        (if (= dx -8)
-                          (condp = dy
-                            6 [(bit-shift-left (blocks 0) 8) (subvec blocks 1)]
-                            -3 [(+ 0xff00 (blocks 0)) (subvec blocks 1)] ; difference between 5 and 0?
-                            [(+ (bit-shift-left (blocks 1) 8) (blocks 0)) (subvec blocks 2)]) ; 0 and 5
-                          [(+ (bit-shift-left (blocks 1) 8) (blocks 0)) (subvec blocks 2)])))
+        decode-mask (fn [blocks has-mask has-dxdy dx dy]
+                      (cond (and has-dxdy (zero? dx) (zero? dy)) [0xffff blocks]
+                            (= dx -8) (condp = dy ; dy = -8 seems to mean something special as well
+                                        7 [(+ 0xff (bit-shift-left (blocks 0) 8)) (subvec blocks 1)]
+                                        3 [(+ 0xff (bit-shift-left (blocks 0) 8)) (subvec blocks 1)]
+                                        6 [(bit-shift-left (blocks 0) 8) (subvec blocks 1)]
+                                        2 [(bit-shift-left (blocks 0) 8) (subvec blocks 1)]
+                                        4 [(+ (bit-shift-left (blocks 1) 8) (blocks 0)) (subvec blocks 2)]
+                                        5 [(+ (bit-shift-left (blocks 1) 8) (blocks 0)) (subvec blocks 2)]
+                                        1 [(+ (bit-shift-left (blocks 1) 8) (blocks 0)) (subvec blocks 2)]
+                                        0 [(+ (bit-shift-left (blocks 1) 8) (blocks 0)) (subvec blocks 2)]
+                                        -1 [0xffff blocks]
+                                        -2 [0xff00 blocks]
+                                        -3 [(+ 0xff00 (blocks 0)) (subvec blocks 1)]
+                                        -4 [(+ 0xff00 (blocks 0)) (subvec blocks 1)]
+                                        -5 [0x00ff blocks]
+                                        -6 [0x0000 blocks]
+                                        -8 [0x0000 blocks]
+                                        -7 [(blocks 0) (subvec blocks 1)])
+                            has-mask [(+ (bit-shift-left (blocks 1) 8) (blocks 0)) (subvec blocks 2)]
+                            :else [0x0000 blocks]))
         mask-from-dxdy (fn [has-dxdy dx dy]
                          (if (and has-dxdy (zero? dx) (zero? dy))
                            0xffff
@@ -260,8 +272,8 @@
         get-pixel (fn [x y] (try (prev-indices (+ x (* y width))) (catch IndexOutOfBoundsException e nil)))
 ;        get-pixel (fn [x y] (prev-indices (+ x (* y width))))
         set-pixel (fn [indices x y p] (assoc! indices (+ x (* y width)) p))
-        decode-filler (fn [dx pixels]
-                        (if (= dx -8)
+        decode-filler (fn [dx dy pixels]
+                        (if (and (= dx -8) (not= dy -8))
                           [(first pixels) (next pixels)]
                           [nil pixels]))
         decode-pixel (fn [indices pixels x y dx dy is-new filler]
@@ -297,32 +309,39 @@
       (if (or (empty? blocks)
               (= y height))
         (do
-          (println "block bytes left:" (count blocks) "pixel bytes left:" (count pixels))
+          (when (or (pos? (count blocks)) (pos? (count pixels)))
+            (println "DECODING ERROR:" "block bytes left:" (count blocks) "pixel bytes left:" (count pixels)))
           (persistent! indices))
         (let [prefix (mapv #(format "%02X" %) (take 16 blocks))
-             ;  _ (when (= [x y] [40 0]) (println prefix))
+              ;_ (when (= [y] [32]) (println x y prefix))
+              ;_ (when (and (zero? y) (<= x 32)) (println x prefix))
               [dx dy] (decode-s4-pair (blocks 0))
-              cb (blocks 1)
-              blocks (subvec blocks 2)
+              ;_ (if (= dx -8) (println "dx:" dx "dy:" dy x y prefix))
+              _ (if (= dy -8) (println "dx:" dx "dy:" dy x y prefix))
+              blocks (subvec blocks 1)
+             ; [[dx dy] blocks] (if (= dx -8) [(decode-s4-pair (blocks 0)) (subvec blocks 1)] [[dx dy] blocks])
+             ; _ (if (= dx -8) (println "again dx:" dx "dy:" dy x y prefix))
+              cb (blocks 0)
+              blocks (subvec blocks 1)
               [[dx0 dy0] blocks] (if (bit-test cb 6) (decode-dxdy blocks) [[0 0] blocks])
-              [mask0 blocks] (if (bit-test cb 7) (decode-mask blocks (bit-test cb 6) dx0 dy0) [(mask-from-dxdy (bit-test cb 6) dx0 dy0) blocks])
-              [[dx1 dy1] blocks] (if (bit-test cb 4) (decode-dxdy blocks) [[0 0] blocks])
-              [mask1 blocks] (if (bit-test cb 5) (decode-mask blocks (bit-test cb 4) dx1 dy1) [(mask-from-dxdy (bit-test cb 4) dx1 dy1) blocks])
-              [[dx2 dy2] blocks] (if (bit-test cb 2) (decode-dxdy blocks) [[0 0] blocks])
-              [mask2 blocks] (if (bit-test cb 3) (decode-mask blocks (bit-test cb 2) dx2 dy2) [(mask-from-dxdy (bit-test cb 2) dx2 dy2) blocks])
-              [[dx3 dy3] blocks] (if (bit-test cb 0) (decode-dxdy blocks) [[0 0] blocks])
-              [mask3 blocks] (if (bit-test cb 1) (decode-mask blocks (bit-test cb 0) dx3 dy3) [(mask-from-dxdy (bit-test cb 0) dx3 dy3) blocks])
               _ (if (= dx0 -8) (println dy0 x y prefix))
+              [mask0 blocks] (decode-mask blocks (bit-test cb 7) (bit-test cb 6) dx0 dy0)
+              [[dx1 dy1] blocks] (if (bit-test cb 4) (decode-dxdy blocks) [[0 0] blocks])
               _ (if (= dx1 -8) (println dy1 x y prefix))
+              [mask1 blocks] (decode-mask blocks (bit-test cb 5) (bit-test cb 4) dx1 dy1)
+              [[dx2 dy2] blocks] (if (bit-test cb 2) (decode-dxdy blocks) [[0 0] blocks])
               _ (if (= dx2 -8) (println dy2 x y prefix))
+              [mask2 blocks] (decode-mask blocks (bit-test cb 3) (bit-test cb 2) dx2 dy2)
+              [[dx3 dy3] blocks] (if (bit-test cb 0) (decode-dxdy blocks) [[0 0] blocks])
               _ (if (= dx3 -8) (println dy3 x y prefix))
-              [filler0 pixels] (decode-filler dx0 pixels)
+              [mask3 blocks] (decode-mask blocks (bit-test cb 1) (bit-test cb 0) dx3 dy3)
+              [filler0 pixels] (decode-filler dx0 dy0 pixels)
               [indices pixels] (decode-block4x4 indices pixels x y (+ gdx dx dx0) (+ gdy dy dy0) mask0 filler0)
-              [filler1 pixels] (decode-filler dx1 pixels)
+              [filler1 pixels] (decode-filler dx1 dy1 pixels)
               [indices pixels] (decode-block4x4 indices pixels (+ x 4) y (+ gdx dx dx1) (+ gdy dy dy1) mask1 filler1)
-              [filler2 pixels] (decode-filler dx2 pixels)
+              [filler2 pixels] (decode-filler dx2 dy2 pixels)
               [indices pixels] (decode-block4x4 indices pixels x (+ y 4) (+ gdx dx dx2) (+ gdy dy dy2) mask2 filler2)
-              [filler3 pixels] (decode-filler dx3 pixels)
+              [filler3 pixels] (decode-filler dx3 dy3 pixels)
               [indices pixels] (decode-block4x4 indices pixels (+ x 4) (+ y 4) (+ gdx dx dx3) (+ gdy dy dy3) mask3 filler3)
               [x y] (if (< (+ x 8) width) [(+ x 8) y] [0 (+ y 8)])]
           (recur blocks pixels x y))))))
@@ -343,15 +362,17 @@
         entities (parse-video-entities (subvec bytes 8 total) (- total 8))
         head (parse-video-head (:bytes (first entities)))]
     (loop [entities (next entities)
+           i 0
            prev-frame nil
            frames (transient [])]
       (let [entity (first entities)
             id (:id entity)]
         (condp = id
-          "Inte" (recur (next entities) (parse-video-inte (:bytes entity) head) frames)
-          "Fram" (let [frame (parse-video-fram (:bytes entity) prev-frame)]
-                   (recur (next entities) frame (conj! frames frame)))
-          "Same" (recur (next entities) prev-frame (conj! frames prev-frame))
+          "Inte" (recur (next entities) i (parse-video-inte (:bytes entity) head) frames)
+          "Fram" (let [frame (parse-video-fram (:bytes entity) prev-frame #_(assoc prev-frame :indices (vec (repeat (count (:indices prev-frame)) nil))))]
+                   (println "Frame " i)
+                   (recur (next entities) (inc i) frame (conj! frames frame)))
+          "Same" (recur (next entities) (inc i) prev-frame (conj! frames prev-frame))
           "Stop" (persistent! frames))))))
 
 
