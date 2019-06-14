@@ -246,7 +246,7 @@
                       [(decode-s4-pair (blocks 0)) (subvec blocks 1)])
         decode-mask (fn [blocks has-mask has-dxdy dx dy]
                       (cond (and has-dxdy (zero? dx) (zero? dy)) [0xffff blocks]
-                            (= dx -8) (condp = dy ; dy = -8 seems to mean something special as well
+                            (= dx -8) (condp = dy
                                         7 [(+ 0xff (bit-shift-left (blocks 0) 8)) (subvec blocks 1)]
                                         3 [(+ 0xff (bit-shift-left (blocks 0) 8)) (subvec blocks 1)]
                                         6 [(bit-shift-left (blocks 0) 8) (subvec blocks 1)]
@@ -265,13 +265,14 @@
                                         -7 [(blocks 0) (subvec blocks 1)])
                             has-mask [(+ (bit-shift-left (blocks 1) 8) (blocks 0)) (subvec blocks 2)]
                             :else [0x0000 blocks]))
-        mask-from-dxdy (fn [has-dxdy dx dy]
-                         (if (and has-dxdy (zero? dx) (zero? dy))
-                           0xffff
-                           0x0000))
-        get-pixel (fn [x y] (try (prev-indices (+ x (* y width))) (catch IndexOutOfBoundsException e nil)))
-;        get-pixel (fn [x y] (prev-indices (+ x (* y width))))
+        get-pixel (fn [x y] (prev-indices (+ x (* y width))))
         set-pixel (fn [indices x y p] (assoc! indices (+ x (* y width)) p))
+        decode-block-dxdy (fn [blocks]
+                            (let [[dx dy] (decode-s4-pair (blocks 0))
+                                  blocks (subvec blocks 1)
+                                  [dx blocks] (if (= dx -8) [(unchecked-byte (blocks 0)) (subvec blocks 1)] [dx blocks])
+                                  [dy blocks] (if (= dy -8) [(unchecked-byte (blocks 0)) (subvec blocks 1)] [dy blocks])]
+                              [dx dy blocks]))
         decode-filler (fn [dx dy pixels]
                         (if (and (= dx -8) (not= dy -8))
                           [(first pixels) (next pixels)]
@@ -311,29 +312,24 @@
         (do
           (when (or (pos? (count blocks)) (pos? (count pixels)))
             (println "DECODING ERROR:" "block bytes left:" (count blocks) "pixel bytes left:" (count pixels)))
+          (flush)
           (persistent! indices))
-        (let [prefix (mapv #(format "%02X" %) (take 16 blocks))
-              ;_ (when (= [y] [32]) (println x y prefix))
-              ;_ (when (and (zero? y) (<= x 32)) (println x prefix))
-              [dx dy] (decode-s4-pair (blocks 0))
-              ;_ (if (= dx -8) (println "dx:" dx "dy:" dy x y prefix))
-              _ (if (= dy -8) (println "dx:" dx "dy:" dy x y prefix))
-              blocks (subvec blocks 1)
-             ; [[dx dy] blocks] (if (= dx -8) [(decode-s4-pair (blocks 0)) (subvec blocks 1)] [[dx dy] blocks])
-             ; _ (if (= dx -8) (println "again dx:" dx "dy:" dy x y prefix))
+        (let [prefix (take 16 blocks)
+              [dx dy blocks] (decode-block-dxdy blocks)
               cb (blocks 0)
               blocks (subvec blocks 1)
               [[dx0 dy0] blocks] (if (bit-test cb 6) (decode-dxdy blocks) [[0 0] blocks])
-              _ (if (= dx0 -8) (println dy0 x y prefix))
               [mask0 blocks] (decode-mask blocks (bit-test cb 7) (bit-test cb 6) dx0 dy0)
               [[dx1 dy1] blocks] (if (bit-test cb 4) (decode-dxdy blocks) [[0 0] blocks])
-              _ (if (= dx1 -8) (println dy1 x y prefix))
               [mask1 blocks] (decode-mask blocks (bit-test cb 5) (bit-test cb 4) dx1 dy1)
               [[dx2 dy2] blocks] (if (bit-test cb 2) (decode-dxdy blocks) [[0 0] blocks])
-              _ (if (= dx2 -8) (println dy2 x y prefix))
               [mask2 blocks] (decode-mask blocks (bit-test cb 3) (bit-test cb 2) dx2 dy2)
               [[dx3 dy3] blocks] (if (bit-test cb 0) (decode-dxdy blocks) [[0 0] blocks])
-              _ (if (= dx3 -8) (println dy3 x y prefix))
+              _ (when (or (and (= dy0 -8) (not= dx0 -8))
+                          (and (= dy1 -8) (not= dx1 -8))
+                          (and (= dy2 -8) (not= dx2 -8))
+                          (and (= dy3 -8) (not= dx3 -8)))
+                  (println "UNHANDLED SEQUENCE:" (mapv #(format "%02X" %) prefix)))
               [mask3 blocks] (decode-mask blocks (bit-test cb 1) (bit-test cb 0) dx3 dy3)
               [filler0 pixels] (decode-filler dx0 dy0 pixels)
               [indices pixels] (decode-block4x4 indices pixels x y (+ gdx dx dx0) (+ gdy dy dy0) mask0 filler0)
@@ -362,17 +358,15 @@
         entities (parse-video-entities (subvec bytes 8 total) (- total 8))
         head (parse-video-head (:bytes (first entities)))]
     (loop [entities (next entities)
-           i 0
            prev-frame nil
            frames (transient [])]
       (let [entity (first entities)
             id (:id entity)]
         (condp = id
-          "Inte" (recur (next entities) i (parse-video-inte (:bytes entity) head) frames)
-          "Fram" (let [frame (parse-video-fram (:bytes entity) prev-frame #_(assoc prev-frame :indices (vec (repeat (count (:indices prev-frame)) nil))))]
-                   (println "Frame " i)
-                   (recur (next entities) (inc i) frame (conj! frames frame)))
-          "Same" (recur (next entities) (inc i) prev-frame (conj! frames prev-frame))
+          "Inte" (recur (next entities) (parse-video-inte (:bytes entity) head) frames)
+          "Fram" (let [frame (parse-video-fram (:bytes entity) prev-frame)]
+                   (recur (next entities) frame (conj! frames frame)))
+          "Same" (recur (next entities) prev-frame (conj! frames prev-frame))
           "Stop" (persistent! frames))))))
 
 
@@ -507,6 +501,409 @@
 
 (defn st00 []
   (save-frames! (load-video "/Volumes/Untitled/_SCITEK/ST00.VID") "st00_#.png"))
+
+
+(defn st17 []
+  (save-frames! (load-video "/Volumes/Untitled/_SCITEK/ST17.VID") "st17_#.png"))
+
+
+(def all-vids
+  ["/Volumes/Untitled//_C1/001.VID"
+   "/Volumes/Untitled//_C1/002.VID"
+   "/Volumes/Untitled//_C1/003.VID"
+   "/Volumes/Untitled//_C1/004.VID"
+   "/Volumes/Untitled//_C1/005.VID"
+   "/Volumes/Untitled//_C1/006.VID"
+   "/Volumes/Untitled//_C1/007.VID"
+   "/Volumes/Untitled//_C1/008.VID"
+   "/Volumes/Untitled//_C1/009.VID"
+   "/Volumes/Untitled//_C1/010.VID"
+   "/Volumes/Untitled//_C1/011.VID"
+   "/Volumes/Untitled//_C1/012.VID"
+   "/Volumes/Untitled//_C1/013.VID"
+   "/Volumes/Untitled//_C1/014.VID"
+   "/Volumes/Untitled//_C1/015.VID"
+   "/Volumes/Untitled//_C1/016.VID"
+   "/Volumes/Untitled//_C2/001.VID"
+   "/Volumes/Untitled//_C2/002.VID"
+   "/Volumes/Untitled//_C2/003.VID"
+   "/Volumes/Untitled//_C2/004.VID"
+   "/Volumes/Untitled//_C2/005.VID"
+   "/Volumes/Untitled//_C2/006.VID"
+   "/Volumes/Untitled//_C2/008.VID"
+   "/Volumes/Untitled//_C2/009.VID"
+   "/Volumes/Untitled//_C2/010.VID"
+   "/Volumes/Untitled//_C2/011.VID"
+   "/Volumes/Untitled//_C2/012.VID"
+   "/Volumes/Untitled//_C2/013.VID"
+   "/Volumes/Untitled//_C2/014.VID"
+   "/Volumes/Untitled//_C2/015.VID"
+   "/Volumes/Untitled//_C2/016.VID"
+   "/Volumes/Untitled//_C2/017.VID"
+   "/Volumes/Untitled//_C2/018.VID"
+   "/Volumes/Untitled//_C2/019.VID"
+   "/Volumes/Untitled//_C2/020.VID"
+   "/Volumes/Untitled//_C3/1A1.VID"
+   "/Volumes/Untitled//_C3/1A2.VID"
+   "/Volumes/Untitled//_C3/1A3.VID"
+   "/Volumes/Untitled//_C3/2A1.VID"
+   "/Volumes/Untitled//_C3/2A2.VID"
+   "/Volumes/Untitled//_C3/2A3.VID"
+   "/Volumes/Untitled//_C3/2B1.VID"
+   "/Volumes/Untitled//_C3/2B2.VID"
+   "/Volumes/Untitled//_C3/2B3.VID"
+   "/Volumes/Untitled//_C3/3A1.VID"
+   "/Volumes/Untitled//_C3/3A2.VID"
+   "/Volumes/Untitled//_C3/3A3.VID"
+   "/Volumes/Untitled//_C3/4A1.VID"
+   "/Volumes/Untitled//_C3/4A2.VID"
+   "/Volumes/Untitled//_C3/4A3.VID"
+   "/Volumes/Untitled//_C3/5A2.VID"
+   "/Volumes/Untitled//_C3/6A1.VID"
+   "/Volumes/Untitled//_C3/6A2.VID"
+   "/Volumes/Untitled//_C3/6A3.VID"
+   "/Volumes/Untitled//_C3/7A1.VID"
+   "/Volumes/Untitled//_C3/7A2.VID"
+   "/Volumes/Untitled//_C3/7A3.VID"
+   "/Volumes/Untitled//_C3/7B1.VID"
+   "/Volumes/Untitled//_C3/7B2.VID"
+   "/Volumes/Untitled//_C3/7B3.VID"
+   "/Volumes/Untitled//_C3/8A1.VID"
+   "/Volumes/Untitled//_C3/8A2.VID"
+   "/Volumes/Untitled//_C3/8A3.VID"
+   "/Volumes/Untitled//_C4/001.VID"
+   "/Volumes/Untitled//_C4/002.VID"
+   "/Volumes/Untitled//_C4/003.VID"
+   "/Volumes/Untitled//_C4/004.VID"
+   "/Volumes/Untitled//_C4/005.VID"
+   "/Volumes/Untitled//_C4/006.VID"
+   "/Volumes/Untitled//_C4/007.VID"
+   "/Volumes/Untitled//_C4/008.VID"
+   "/Volumes/Untitled//_C4/009.VID"
+   "/Volumes/Untitled//_C4/010.VID"
+   "/Volumes/Untitled//_C4/011.VID"
+   "/Volumes/Untitled//_C4/012.VID"
+   "/Volumes/Untitled//_C4/013.VID"
+   "/Volumes/Untitled//_C4/014.VID"
+   "/Volumes/Untitled//_C4/015.VID"
+   "/Volumes/Untitled//_C4/016.VID"
+   "/Volumes/Untitled//_C4/017.VID"
+   "/Volumes/Untitled//_C4/018.VID"
+   "/Volumes/Untitled//_C4/019.VID"
+   "/Volumes/Untitled//_C4/020.VID"
+   "/Volumes/Untitled//_C5/000.VID"
+   "/Volumes/Untitled//_C5/001.VID"
+   "/Volumes/Untitled//_C5/002.VID"
+   "/Volumes/Untitled//_C5/003.VID"
+   "/Volumes/Untitled//_C5/004.VID"
+   "/Volumes/Untitled//_C5/005.VID"
+   "/Volumes/Untitled//_C5/006.VID"
+   "/Volumes/Untitled//_C5/007.VID"
+   "/Volumes/Untitled//_C5/008.VID"
+   "/Volumes/Untitled//_C5/010.VID"
+   "/Volumes/Untitled//_C5/011.VID"
+   "/Volumes/Untitled//_C5/012.VID"
+   "/Volumes/Untitled//_C5/013.VID"
+   "/Volumes/Untitled//_C5/016.VID"
+   "/Volumes/Untitled//_C5/017.VID"
+   "/Volumes/Untitled//_C5/018.VID"
+   "/Volumes/Untitled//_C5/019.VID"
+   "/Volumes/Untitled//_C5/022.VID"
+   "/Volumes/Untitled//_C5/023.VID"
+   "/Volumes/Untitled//_C5/024.VID"
+   "/Volumes/Untitled//_C5/027.VID"
+   "/Volumes/Untitled//_C5/028.VID"
+   "/Volumes/Untitled//_C5/029.VID"
+   "/Volumes/Untitled//_C5/032.VID"
+   "/Volumes/Untitled//_C5/033.VID"
+   "/Volumes/Untitled//_C5/034.VID"
+   "/Volumes/Untitled//_C5/035.VID"
+   "/Volumes/Untitled//_C5/036.VID"
+   "/Volumes/Untitled//_C5/037.VID"
+   "/Volumes/Untitled//_C5/038.VID"
+   "/Volumes/Untitled//_C6/001.VID"
+   "/Volumes/Untitled//_C6/002.VID"
+   "/Volumes/Untitled//_C6/003.VID"
+   "/Volumes/Untitled//_C6/004.VID"
+   "/Volumes/Untitled//_C6/005.VID"
+   "/Volumes/Untitled//_C6/006.VID"
+   "/Volumes/Untitled//_C6/007.VID"
+   "/Volumes/Untitled//_C6/008.VID"
+   "/Volumes/Untitled//_C6/009.VID"
+   "/Volumes/Untitled//_C6/010.VID"
+   "/Volumes/Untitled//_C6/011.VID"
+   "/Volumes/Untitled//_C6/012.VID"
+   "/Volumes/Untitled//_C6/013.VID"
+   "/Volumes/Untitled//_C6/014.VID"
+   "/Volumes/Untitled//_C6/015.VID"
+   "/Volumes/Untitled//_C6/016.VID"
+   "/Volumes/Untitled//_C6/017.VID"
+   "/Volumes/Untitled//_C6/018.VID"
+   "/Volumes/Untitled//_INTRO/CAJJI.VID"
+   "/Volumes/Untitled//_MA/PB00.VID"
+   "/Volumes/Untitled//_MA/PB01.VID"
+   "/Volumes/Untitled//_MA/PB02.VID"
+   "/Volumes/Untitled//_MA/PB03.VID"
+   "/Volumes/Untitled//_MA/PB04.VID"
+   "/Volumes/Untitled//_MA/PB05.VID"
+   "/Volumes/Untitled//_MA/PB06.VID"
+   "/Volumes/Untitled//_MA/PB07.VID"
+   "/Volumes/Untitled//_MA/PB08.VID"
+   "/Volumes/Untitled//_MA/PB09.VID"
+   "/Volumes/Untitled//_MA/PB10.VID"
+   "/Volumes/Untitled//_MA/PB11.VID"
+   "/Volumes/Untitled//_MA/PB12.VID"
+   "/Volumes/Untitled//_MA/PB13.VID"
+   "/Volumes/Untitled//_MA/PB14.VID"
+   "/Volumes/Untitled//_MA/PB15.VID"
+   "/Volumes/Untitled//_MA/PB16.VID"
+   "/Volumes/Untitled//_MA/PB17.VID"
+   "/Volumes/Untitled//_MA/PB18.VID"
+   "/Volumes/Untitled//_MA/PB19.VID"
+   "/Volumes/Untitled//_MA/PB20.VID"
+   "/Volumes/Untitled//_MA/PB21.VID"
+   "/Volumes/Untitled//_MA/PB22.VID"
+   "/Volumes/Untitled//_MA/PB23.VID"
+   "/Volumes/Untitled//_MA/PB24.VID"
+   "/Volumes/Untitled//_MA/PB25.VID"
+   "/Volumes/Untitled//_MA/PB26.VID"
+   "/Volumes/Untitled//_MA/PB27.VID"
+   "/Volumes/Untitled//_MA/PB28.VID"
+   "/Volumes/Untitled//_MA/PB29.VID"
+   "/Volumes/Untitled//_MA/PB30.VID"
+   "/Volumes/Untitled//_MA/PB31.VID"
+   "/Volumes/Untitled//_MA/PB32.VID"
+   "/Volumes/Untitled//_MA/PB33.VID"
+   "/Volumes/Untitled//_MA/PB34.VID"
+   "/Volumes/Untitled//_MA/PB35.VID"
+   "/Volumes/Untitled//_MA/PB36.VID"
+   "/Volumes/Untitled//_MA/PB37.VID"
+   "/Volumes/Untitled//_MA/PB38.VID"
+   "/Volumes/Untitled//_MA/PB39.VID"
+   "/Volumes/Untitled//_MA/PH00.VID"
+   "/Volumes/Untitled//_MA/PH01.VID"
+   "/Volumes/Untitled//_MA/PH02.VID"
+   "/Volumes/Untitled//_MA/PH03.VID"
+   "/Volumes/Untitled//_MA/PH04.VID"
+   "/Volumes/Untitled//_MA/PH05.VID"
+   "/Volumes/Untitled//_MA/PH06.VID"
+   "/Volumes/Untitled//_MA/PH07.VID"
+   "/Volumes/Untitled//_MA/PH08.VID"
+   "/Volumes/Untitled//_MA/PH09.VID"
+   "/Volumes/Untitled//_MA/PH10.VID"
+   "/Volumes/Untitled//_MA/PH11.VID"
+   "/Volumes/Untitled//_MA/PH12.VID"
+   "/Volumes/Untitled//_MA/PH13.VID"
+   "/Volumes/Untitled//_MA/PH14.VID"
+   "/Volumes/Untitled//_MA/PH15.VID"
+   "/Volumes/Untitled//_MA/PM00.VID"
+   "/Volumes/Untitled//_MA/PM01.VID"
+   "/Volumes/Untitled//_MA/PM02.VID"
+   "/Volumes/Untitled//_MA/PM03.VID"
+   "/Volumes/Untitled//_MA/PM04.VID"
+   "/Volumes/Untitled//_MA/PM05.VID"
+   "/Volumes/Untitled//_MA/PM06.VID"
+   "/Volumes/Untitled//_MA/PM07.VID"
+   "/Volumes/Untitled//_MA/PM08.VID"
+   "/Volumes/Untitled//_MA/PM09.VID"
+   "/Volumes/Untitled//_MA/PM10.VID"
+   "/Volumes/Untitled//_MA/PS00.VID"
+   "/Volumes/Untitled//_MA/PS01.VID"
+   "/Volumes/Untitled//_MA/PS02.VID"
+   "/Volumes/Untitled//_MA/PS03.VID"
+   "/Volumes/Untitled//_MA/PS04.VID"
+   "/Volumes/Untitled//_MA/PS05.VID"
+   "/Volumes/Untitled//_MA/PS06.VID"
+   "/Volumes/Untitled//_MA/PS08.VID"
+   "/Volumes/Untitled//_MA/PS09.VID"
+   "/Volumes/Untitled//_MA/ST00.VID"
+   "/Volumes/Untitled//_MA/ST01.VID"
+   "/Volumes/Untitled//_MA/ST05.VID"
+   "/Volumes/Untitled//_MA/ST06.VID"
+   "/Volumes/Untitled//_MA/ST07.VID"
+   "/Volumes/Untitled//_MA/ST09.VID"
+   "/Volumes/Untitled//_MA/ST11.VID"
+   "/Volumes/Untitled//_MA/ST12.VID"
+   "/Volumes/Untitled//_MA/ST14.VID"
+   "/Volumes/Untitled//_MA/ST15.VID"
+   "/Volumes/Untitled//_MA/ST20.VID"
+   "/Volumes/Untitled//_MA/ST30.VID"
+   "/Volumes/Untitled//_MA/ST31.VID"
+   "/Volumes/Untitled//_MA/ST34.VID"
+   "/Volumes/Untitled//_MA/ST35.VID"
+   "/Volumes/Untitled//_SCITEK/ST00.VID"
+   "/Volumes/Untitled//_SCITEK/ST01.VID"
+   "/Volumes/Untitled//_SCITEK/ST02.VID"
+   "/Volumes/Untitled//_SCITEK/ST03.VID"
+   "/Volumes/Untitled//_SCITEK/ST04.VID"
+   "/Volumes/Untitled//_SCITEK/ST05.VID"
+   "/Volumes/Untitled//_SCITEK/ST06.VID"
+   "/Volumes/Untitled//_SCITEK/ST07.VID"
+   "/Volumes/Untitled//_SCITEK/ST08.VID"
+   "/Volumes/Untitled//_SCITEK/ST09.VID"
+   "/Volumes/Untitled//_SCITEK/ST10.VID"
+   "/Volumes/Untitled//_SCITEK/ST11.VID"
+   "/Volumes/Untitled//_SCITEK/ST12.VID"
+   "/Volumes/Untitled//_SCITEK/ST13.VID"
+   "/Volumes/Untitled//_SCITEK/ST14.VID"
+   "/Volumes/Untitled//_SCITEK/ST15.VID"
+   "/Volumes/Untitled//_SCITEK/ST16.VID"
+   "/Volumes/Untitled//_SCITEK/ST17.VID"
+   "/Volumes/Untitled//_SCITEK/ST18.VID"
+   "/Volumes/Untitled//_SCITEK/ST19.VID"
+   "/Volumes/Untitled//_SCITEK/ST20.VID"
+   "/Volumes/Untitled//_SCITEK/ST21.VID"
+   "/Volumes/Untitled//_SCITEK/ST22.VID"
+   "/Volumes/Untitled//_SCITEK/ST23.VID"
+   "/Volumes/Untitled//_SCITEK/ST24.VID"
+   "/Volumes/Untitled//_SCITEK/ST25.VID"
+   "/Volumes/Untitled//_SCITEK/ST26.VID"
+   "/Volumes/Untitled//_SCITEK/ST27.VID"
+   "/Volumes/Untitled//_SCITEK/ST28.VID"
+   "/Volumes/Untitled//_SCITEK/ST29.VID"
+   "/Volumes/Untitled//_SCITEK/ST30.VID"
+   "/Volumes/Untitled//_SCITEK/ST31.VID"
+   "/Volumes/Untitled//_SCITEK/ST32.VID"
+   "/Volumes/Untitled//_SCITEK/ST33.VID"
+   "/Volumes/Untitled//_SCITEK/ST34.VID"
+   "/Volumes/Untitled//_SCITEK/ST35.VID"
+   "/Volumes/Untitled//_ZOOM/AC01.VID"
+   "/Volumes/Untitled//_ZOOM/AC02.VID"
+   "/Volumes/Untitled//_ZOOM/AC03.VID"
+   "/Volumes/Untitled//_ZOOM/AC04.VID"
+   "/Volumes/Untitled//_ZOOM/AC05.VID"
+   "/Volumes/Untitled//_ZOOM/AC06.VID"
+   "/Volumes/Untitled//_ZOOM/AC07.VID"
+   "/Volumes/Untitled//_ZOOM/AC08.VID"
+   "/Volumes/Untitled//_ZOOM/AC09.VID"
+   "/Volumes/Untitled//_ZOOM/AC10.VID"
+   "/Volumes/Untitled//_ZOOM/AC11.VID"
+   "/Volumes/Untitled//_ZOOM/AC12.VID"
+   "/Volumes/Untitled//_ZOOM/AC13.VID"
+   "/Volumes/Untitled//_ZOOM/AC14.VID"
+   "/Volumes/Untitled//_ZOOM/AC15.VID"
+   "/Volumes/Untitled//_ZOOM/AC16.VID"
+   "/Volumes/Untitled//_ZOOM/AC17.VID"
+   "/Volumes/Untitled//_ZOOM/AC18.VID"
+   "/Volumes/Untitled//_ZOOM/AC19.VID"
+   "/Volumes/Untitled//_ZOOM/AC20.VID"
+   "/Volumes/Untitled//_ZOOM/AC21.VID"
+   "/Volumes/Untitled//_ZOOM/AC22.VID"
+   "/Volumes/Untitled//_ZOOM/AC23.VID"
+   "/Volumes/Untitled//_ZOOM/AC24.VID"
+   "/Volumes/Untitled//_ZOOM/AC25.VID"
+   "/Volumes/Untitled//_ZOOM/AC26.VID"
+   "/Volumes/Untitled//_ZOOM/AR01.VID"
+   "/Volumes/Untitled//_ZOOM/AR02.VID"
+   "/Volumes/Untitled//_ZOOM/AR03.VID"
+   "/Volumes/Untitled//_ZOOM/AR04.VID"
+   "/Volumes/Untitled//_ZOOM/AR05.VID"
+   "/Volumes/Untitled//_ZOOM/AR06.VID"
+   "/Volumes/Untitled//_ZOOM/AR07.VID"
+   "/Volumes/Untitled//_ZOOM/AR08.VID"
+   "/Volumes/Untitled//_ZOOM/AR09.VID"
+   "/Volumes/Untitled//_ZOOM/AR10.VID"
+   "/Volumes/Untitled//_ZOOM/AR11.VID"
+   "/Volumes/Untitled//_ZOOM/AR12.VID"
+   "/Volumes/Untitled//_ZOOM/AR13.VID"
+   "/Volumes/Untitled//_ZOOM/AR14.VID"
+   "/Volumes/Untitled//_ZOOM/AR15.VID"
+   "/Volumes/Untitled//_ZOOM/AR16.VID"
+   "/Volumes/Untitled//_ZOOM/AR17.VID"
+   "/Volumes/Untitled//_ZOOM/AR18.VID"
+   "/Volumes/Untitled//_ZOOM/AR19.VID"
+   "/Volumes/Untitled//_ZOOM/AR20.VID"
+   "/Volumes/Untitled//_ZOOM/AR21.VID"
+   "/Volumes/Untitled//_ZOOM/AR22.VID"
+   "/Volumes/Untitled//_ZOOM/AR23.VID"
+   "/Volumes/Untitled//_ZOOM/BR01.VID"
+   "/Volumes/Untitled//_ZOOM/BR02.VID"
+   "/Volumes/Untitled//_ZOOM/BR03.VID"
+   "/Volumes/Untitled//_ZOOM/BR04.VID"
+   "/Volumes/Untitled//_ZOOM/BR05.VID"
+   "/Volumes/Untitled//_ZOOM/BR06.VID"
+   "/Volumes/Untitled//_ZOOM/BR07.VID"
+   "/Volumes/Untitled//_ZOOM/BR08.VID"
+   "/Volumes/Untitled//_ZOOM/BR09.VID"
+   "/Volumes/Untitled//_ZOOM/BR10.VID"
+   "/Volumes/Untitled//_ZOOM/BR11.VID"
+   "/Volumes/Untitled//_ZOOM/BR12.VID"
+   "/Volumes/Untitled//_ZOOM/BR13.VID"
+   "/Volumes/Untitled//_ZOOM/BR14.VID"
+   "/Volumes/Untitled//_ZOOM/BR15.VID"
+   "/Volumes/Untitled//_ZOOM/BR16.VID"
+   "/Volumes/Untitled//_ZOOM/BR17.VID"
+   "/Volumes/Untitled//_ZOOM/BR18.VID"
+   "/Volumes/Untitled//_ZOOM/BR19.VID"
+   "/Volumes/Untitled//_ZOOM/BR20.VID"
+   "/Volumes/Untitled//_ZOOM/BR21.VID"
+   "/Volumes/Untitled//_ZOOM/BR22.VID"
+   "/Volumes/Untitled//_ZOOM/BR23.VID"
+   "/Volumes/Untitled//_ZOOM/MK01.VID"
+   "/Volumes/Untitled//_ZOOM/MK02.VID"
+   "/Volumes/Untitled//_ZOOM/MK03.VID"
+   "/Volumes/Untitled//_ZOOM/MK04.VID"
+   "/Volumes/Untitled//_ZOOM/MK05.VID"
+   "/Volumes/Untitled//_ZOOM/MK06.VID"
+   "/Volumes/Untitled//_ZOOM/MK07.VID"
+   "/Volumes/Untitled//_ZOOM/MK08.VID"
+   "/Volumes/Untitled//_ZOOM/MK09.VID"
+   "/Volumes/Untitled//_ZOOM/MK10.VID"
+   "/Volumes/Untitled//_ZOOM/MK11.VID"
+   "/Volumes/Untitled//_ZOOM/MK12.VID"
+   "/Volumes/Untitled//_ZOOM/MK13.VID"
+   "/Volumes/Untitled//_ZOOM/MK14.VID"
+   "/Volumes/Untitled//_ZOOM/MK15.VID"
+   "/Volumes/Untitled//_ZOOM/MK16.VID"
+   "/Volumes/Untitled//_ZOOM/MK17.VID"
+   "/Volumes/Untitled//_ZOOM/MK18.VID"
+   "/Volumes/Untitled//_ZOOM/MK19.VID"
+   "/Volumes/Untitled//_ZOOM/MK20.VID"
+   "/Volumes/Untitled//_ZOOM/MK21.VID"
+   "/Volumes/Untitled//_ZOOM/MN01.VID"
+   "/Volumes/Untitled//_ZOOM/MN02.VID"
+   "/Volumes/Untitled//_ZOOM/MN03.VID"
+   "/Volumes/Untitled//_ZOOM/MN04.VID"
+   "/Volumes/Untitled//_ZOOM/MN05.VID"
+   "/Volumes/Untitled//_ZOOM/MN06.VID"
+   "/Volumes/Untitled//_ZOOM/MN07.VID"
+   "/Volumes/Untitled//_ZOOM/MN08.VID"
+   "/Volumes/Untitled//_ZOOM/MN09.VID"
+   "/Volumes/Untitled//_ZOOM/MN10.VID"
+   "/Volumes/Untitled//_ZOOM/MN11.VID"
+   "/Volumes/Untitled//_ZOOM/MN12.VID"
+   "/Volumes/Untitled//_ZOOM/MN13.VID"
+   "/Volumes/Untitled//_ZOOM/MN14.VID"
+   "/Volumes/Untitled//_ZOOM/MN15.VID"
+   "/Volumes/Untitled//_ZOOM/MN16.VID"
+   "/Volumes/Untitled//_ZOOM/MN17.VID"
+   "/Volumes/Untitled//_ZOOM/MN18.VID"
+   "/Volumes/Untitled//_ZOOM/MN19.VID"
+   "/Volumes/Untitled//_ZOOM/MN20.VID"
+   "/Volumes/Untitled//_ZOOM/MN21.VID"
+   "/Volumes/Untitled//_ZOOM/RI01.VID"
+   "/Volumes/Untitled//_ZOOM/RI02.VID"
+   "/Volumes/Untitled//_ZOOM/RI03.VID"
+   "/Volumes/Untitled//_ZOOM/RI04.VID"
+   "/Volumes/Untitled//_ZOOM/RI05.VID"
+   "/Volumes/Untitled//_ZOOM/RI06.VID"
+   "/Volumes/Untitled//_ZOOM/RI07.VID"
+   "/Volumes/Untitled//_ZOOM/RI08.VID"
+   "/Volumes/Untitled//_ZOOM/RI09.VID"
+   "/Volumes/Untitled//_ZOOM/RI10.VID"
+   "/Volumes/Untitled//_ZOOM/RI11.VID"
+   "/Volumes/Untitled//_ZOOM/RI12.VID"
+   "/Volumes/Untitled//_ZOOM/RI13.VID"
+   "/Volumes/Untitled//_ZOOM/RI14.VID"
+   "/Volumes/Untitled//_ZOOM/RI15.VID"
+   "/Volumes/Untitled//_ZOOM/RI16.VID"
+   "/Volumes/Untitled//_ZOOM/RI17.VID"
+   "/Volumes/Untitled//_ZOOM/RI18.VID"
+   "/Volumes/Untitled//_ZOOM/RI19.VID"
+   "/Volumes/Untitled//_ZOOM/RI20.VID"
+   "/Volumes/Untitled//_ZOOM/RI21.VID"
+   "/Volumes/Untitled//_ZOOM/RI22.VID"
+   "/Volumes/Untitled//_ZOOM/RI23.VID"])
 
 
 (defn -main
