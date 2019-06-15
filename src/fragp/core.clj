@@ -344,9 +344,16 @@
 
 
 (defn parse-video-fram [bytes {:keys [width height palette] :as prev-frame}]
-  (let [blocks (decode-video-rle (subvec bytes 2))
-        pixels (decode-video-rle (subvec bytes (+ 2 (:rle-size blocks))))]
-    {:unknown1 (subvec bytes 0 2)
+  (let [unknown2 (bytes 1)
+        unknown3 (condp = unknown2
+                   0 nil
+                   1 (decode-video-rle (subvec bytes 2)))
+        bytes (subvec bytes (+ 2 (:rle-size unknown3 0)))
+        blocks (decode-video-rle bytes)
+        pixels (decode-video-rle (subvec bytes (:rle-size blocks)))]
+    {:unknown1 (bytes 0)
+     :unknown2 unknown2
+     :unknown3 (:bytes unknown3)
      :width width
      :height height
      :palette palette
