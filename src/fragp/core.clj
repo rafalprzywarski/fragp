@@ -396,15 +396,18 @@
       (save-picture-as-png! outfile)))
 
 
-(defn convert-sprites [infile outfile]
-  (let [sprites (load-graphics-sprites infile)]
+(defn convert-sprites [infile outfile & {:keys [palette-file]}]
+  (let [sprites (load-graphics-sprites infile)
+        palette (when palette-file (load-palette palette-file))]
     (loop [sprites sprites
            i 0]
       (when sprites
         (let [sprite (first sprites)]
           (when (and (pos? (:width sprite)) (pos? (:height sprite)))
             (save-picture-as-png!
-             sprite
+             (if palette
+               (assoc sprite :palette palette)
+               sprite)
              (.replace outfile "#" (str i))))
           (recur (next sprites) (inc i)))))))
 
